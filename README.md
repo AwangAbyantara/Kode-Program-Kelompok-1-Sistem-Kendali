@@ -1,1 +1,1 @@
-### Kode-Program-Kelompok 1-Sistem-Kendali
+### Kode-Kelompok 1-Sistem-Kendali
