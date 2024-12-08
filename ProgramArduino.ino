@@ -1,200 +1,135 @@
-void readEncoder(){
-
-  int b = digitalRead(pinB);
-
-  if(b>0){
-
-    pos++;
-
-  }
-
-  else{
-
-    pos--;
-
-  }
-
-}// Pin untuk motor dan encoder
-const int enA = 5;          // Pin PWM untuk kecepatan motor
-const int in1 = 7;          // Pin arah Counter Clockwise
-const int in2 = 6;          // Pin arah Clockwise
-const int encoderPin = 2;   // Pin untuk membaca pulsa dari encoder
+// Pin untuk motor dan encoder
+const int enA = 5;
+const int in1 = 7;
+const int in2 = 6;
+const int encoderPin = 2;
 
 // Konstanta
-const int PPR = 11;         // Pulsa per rotasi encoder 
-const unsigned long interval = 100; // Interval waktu untuk menghitung RPM (100 ms)
-
+const int PPR = 11; // Pulsa per rotasi encoder
+const unsigned long interval = 50; // Interval untuk menghitung RPM
 
 // Variabel global
-volatile int pulseCount = 0;      // Menghitung pulsa encoder (gunakan volatile untuk interrupt)
-int pwmValue = 0;                 // Nilai PWM untuk mengatur kecepatan motor
-unsigned long previousMillis = 0; // Waktu sebelumnya untuk interval
-float rpm = 0;                    // Menyimpan nilai RPM
-bool motorRunning = false;        // Status motor aktif
-float kp = 1.0;        // Koefisien Proportional
-float ki = 0.5;        // Koefisien Integral
-float kd = 0.1;       // Koefisien Derivative
-float setpoint = 100;  // Kecepatan yang diinginkan (RPM target) - ini dapat diubah melalui input
-float Error = 0;       // Error antara setpoint dan nilai RPM saat ini
-float prevError = 0;   // Error sebelumnya
-float integralError = 0; // Integral error
-float derivativeError = 0; // Derivative error
-float pidValue = 0;     // Nilai output PID
-int maxPWM = 255;       // Nilai PWM maksimum yang dapat diberikan ke motor
+volatile int pulseCount = 0;
+unsigned long previousMillis = 0;
+double rpm = 0;
+bool motorRunning = false;
+bool dataSending = false; // Hanya kirim data jika "START" diterima
+double setpoint = 0;
+double input = 0;
+double output = 0;
 
-// Fungsi untuk PID
-int PIDControl() {
-    float PControl, IControl, DControl, POutput; 
-    Error = setpoint - rpm;
-    PControl = kp * Error;
-    integralError += Error;
-    IControl = ki * integralError;
-    DControl = kd * derivativeError;
-    derivativeError = Error - prevError;
-    prevError = Error;
-    POutput = PControl + IControl + DControl;
-    pidValue = constrain(POutput, 0, maxPWM);
-    return pidValue; 
-}
-void setup(){
-  // Konfigurasi pin
-  pinMode(enA, OUTPUT);      // Output PWM
-  pinMode(in1, OUTPUT);      // Output arah motor
-  pinMode(in2, OUTPUT);      // Output arah motor
-  pinMode(encoderPin, INPUT);// Input encoder
-  attachInterrupt(digitalPinToInterrupt(encoderPin), countPulse, RISING); // Interrupt untuk encoder
+// Parameter PID
+double kp = 1.0, ki = 0.5, kd = 0.1;
+double previousError = 0;
+double integral = 0;
 
-  Serial.begin(9600);        // Inisialisasi komunikasi serial
+void setup() {
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(encoderPin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(encoderPin), countPulse, RISING);
+
+  Serial.begin(9600);
+  Serial.println("Sistem siap.");
 }
 
-// Fungsi interrupt untuk menghitung pulsa encoder
 void countPulse() {
   pulseCount++;
 }
-// Fungsi untuk Arah Putar Motor CCW
-void motorReverse() {
-  digitalWrite(in1, HIGH);
-  digitalWrite(in2, LOW);
-  motorRunning = true;
-  Serial.println("Motor bergerak ke arah Counter Clockwise.");
-}
-// Fungsi untuk Arah Putar Motor CW
-void motorForward() {
-  digitalWrite(in1, LOW);
-  digitalWrite(in2, HIGH);
-  motorRunning = true;
-  Serial.println("Motor bergerak ke arah Clockwise.");
-}
-// Fungsi untuk menghentikan motor
-void motorStop() {
-  digitalWrite(in1, LOW);
-  digitalWrite(in2, LOW);
-  analogWrite(enA, 0);
-  motorRunning = false;
-  Serial.println("Motor berhenti.");
-}
+
 void loop() {
-  // Cek apakah ada data masuk dari Serial Monitor
+  // Periksa input serial
   if (Serial.available() > 0) {
-    String input = Serial.readString();
-    processInput(input); // Proses input
+    String inputStr = Serial.readStringUntil('\n');
+    processInput(inputStr);
   }
-  // Hitung RPM setiap interval waktu
+
+  // Hitung RPM
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis; // Reset waktu
+    previousMillis = currentMillis;
 
-    // Hitung RPM
-    calculateRPM();
+    float alpha = 0.1; // Koefisien filter (0 < alpha < 1, lebih kecil berarti lebih halus)
+    rpm = alpha * ((pulseCount / (double)PPR) / 9.6) * 600.0 + (1 - alpha) * rpm;
+    pulseCount = 0; 
 
-     // Jika motor berjalan, gunakan PID untuk mengatur PWM
+    // Hitung PID manual
+    input = rpm;
+    double error = setpoint - input;
+    integral += error * (interval / 1000.0); // Integrasi
+    double derivative = (error - previousError) / (interval / 1000.0); // Turunan
+    output = (kp * error) + (ki * integral) + (kd * derivative);
+    previousError = error;
+
+    // Batasi output agar berada di antara 0 dan 255
+    if (output > 255) output = 255;
+    if (output < 0) output = 0;
+
     if (motorRunning) {
-      pwmValue = PIDControl();  // Hitung nilai PWM menggunakan PID
-      analogWrite(enA, pwmValue); // Terapkan nilai PWM ke motor
+      analogWrite(enA, output);
+    }
 
-      // Kirim data melalui serial
-      Serial.print("DATA:");
-      Serial.print(currentMillis / 1000.0); // Waktu dalam detik
-      Serial.print(",");
-      Serial.print(rpm);
-      Serial.print(",");
-      Serial.println(setpoint);
-       if (Serial.available() > 0) {
-        String input = Serial.readStringUntil('\n');
-        processInput(input);} // Proses input
+    // Kirim data jika "START"
+    if (dataSending) {
+      Serial.print("RPM:"); Serial.print(rpm);
+      Serial.print(",SETPOINT:"); Serial.print(setpoint);
+      Serial.print(",OUTPUT:"); Serial.print(output);
+      Serial.print(",KP:"); Serial.print(kp);
+      Serial.print(",KI:"); Serial.print(ki);
+      Serial.print(",KD:"); Serial.println(kd);
     }
   }
 }
-// Fungsi Untuk Perintah Input
+
 void processInput(String input) {
-  input.trim();           // Hapus spasi atau karakter kosong
-  input.toUpperCase();    // Ubah ke huruf besar agar case-insensitive
+  input.trim();
+  input.toUpperCase();
 
-  if (input.startsWith("F")) { // Perintah untuk arah Clockwisse
-    setpoint = input.substring(1).toFloat(); // Ambil nilai setelah "F"
+  if (input.startsWith("F")) { // Arah searah jarum jam (Clockwise)
+    setpoint = input.substring(1).toFloat();
     if (setpoint >= 0) {
-      Serial.print("Setpoint RPM (Clockwise) diatur ke: ");
+      motorRunning = true;
+      dataSending = true; // Mulai kirim data
+      digitalWrite(in1, LOW);
+      digitalWrite(in2, HIGH);
+      Serial.print("Motor bergerak searah jarum jam dengan setpoint: ");
       Serial.println(setpoint);
-      // Aktifkan motor arah Clockwise jika setpoint > 0
-      if (setpoint > 0) {
-        motorForward(); // Fungsi motor arah Clockwise
-      }
-    } else {
-      Serial.println("Nilai RPM tidak valid.");
     }
-
-  } else if (input.startsWith("R")) { // Perintah untuk arah Counter Clockwise
-    setpoint = input.substring(1).toFloat(); // Ambil nilai setelah "R"
+  } else if (input.startsWith("R")) { // Arah berlawanan jarum jam (Counter Clockwise)
+    setpoint = input.substring(1).toFloat();
     if (setpoint >= 0) {
-      Serial.print("Setpoint RPM (Counter CLockwise) diatur ke: ");
+      motorRunning = true;
+      dataSending = true; // Mulai kirim data
+      digitalWrite(in1, HIGH);
+      digitalWrite(in2, LOW);
+      Serial.print("Motor bergerak berlawanan jarum jam dengan setpoint: ");
       Serial.println(setpoint);
-
-      // Aktifkan motor mundur jika setpoint > 0
-      if (setpoint > 0) {
-        motorReverse(); // Fungsi motor arah Counter Clockwise
-      }
-    } else {
-      Serial.println("Nilai RPM tidak valid.");
     }
-
+  } else if (input.startsWith("KP")) {
+    kp = input.substring(2).toFloat();
+    Serial.print("KP diperbarui menjadi: ");
+    Serial.println(kp);
+  } else if (input.startsWith("KI")) {
+    ki = input.substring(2).toFloat();
+    Serial.print("KI diperbarui menjadi: ");
+    Serial.println(ki);
+  } else if (input.startsWith("KD")) {
+    kd = input.substring(2).toFloat();
+    Serial.print("KD diperbarui menjadi: ");
+    Serial.println(kd);
   } else if (input == "STOP") { // Perintah berhenti
-    motorStop();
-    setpoint = 0; // Reset setpoint
+    analogWrite(enA, 0);
+    motorRunning = false;
+    dataSending = false; // Hentikan pengiriman data
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
     Serial.println("Motor berhenti.");
-
-  }  else if (input.startsWith("PID,")) {
-    // Memproses input PID
-    String pidValues = input.substring(4);
-    int firstComma = pidValues.indexOf(',');
-    int secondComma = pidValues.indexOf(',', firstComma + 1);
-    if (firstComma > 0 && secondComma > firstComma) {
-      String kpStr = pidValues.substring(0, firstComma);
-      String kiStr = pidValues.substring(firstComma + 1, secondComma);
-      String kdStr = pidValues.substring(secondComma + 1);
-
-      float newKp = kpStr.toFloat();
-      float newKi = kiStr.toFloat();
-      float newKd = kdStr.toFloat();
-
-      kp = newKp;
-      ki = newKi;
-      kd = newKd;
-
-      Serial.print("Updated PID parameters: kp=");
-      Serial.print(kp);
-      Serial.print(", ki=");
-      Serial.print(ki);
-      Serial.print(", kd=");
-      Serial.println(kd);
-    } else {
-      Serial.println("Invalid PID parameters");
-    }
+  } else if (input == "START") {
+    motorRunning = true;
+    dataSending = true; // Mulai pengiriman data
+    Serial.println("Motor mulai.");
   } else {
-    Serial.println("Perintah tidak dikenal. Gunakan 'F[rpm]' untuk maju, 'R[rpm]' untuk mundur, 'PID,kp,ki,kd' untuk mengatur PID, atau 'STOP'.");
+    Serial.println("Perintah tidak dikenali.");
   }
-}
-// Fungsi untuk menghitung RPM
-void calculateRPM() {
-  rpm = ((pulseCount / (float)PPR) / 9.6) * 600.0; // RPM = (Pulsa / Pulsa per rotasi) x 60 detik
-  pulseCount = 0; // Reset hitungan pulsa
 }
